@@ -59,7 +59,7 @@ jobs:
           aarch64-linux-gnu-objcopy --strip-unneeded \
             -R .comment -R .note.gnu.build-id -R .note.gnu.property \
             -R .note.Linux -R .note.GNU-stack \
-            lkm/dfroot.ko $GITHUB_WORKSPACE/out/dfroot-4.19.ko
+            $GITHUB_WORKSPACE/lkm/dfroot.ko $GITHUB_WORKSPACE/out/dfroot-4.19.ko
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- M=$GITHUB_WORKSPACE/lkm clean
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CFLAGS_dfroot.o="$KOFLAGS" \
             KCFLAGS="-DDFROOT_PROBE" \
@@ -67,7 +67,7 @@ jobs:
           aarch64-linux-gnu-objcopy --strip-unneeded \
             -R .comment -R .note.gnu.build-id -R .note.gnu.property \
             -R .note.Linux -R .note.GNU-stack \
-            lkm/dfroot.ko $GITHUB_WORKSPACE/out/dfroot-4.19-probe.ko
+            $GITHUB_WORKSPACE/lkm/dfroot.ko $GITHUB_WORKSPACE/out/dfroot-4.19-probe.ko
           echo "=== ko vermagic ==="
           strings $GITHUB_WORKSPACE/out/dfroot-4.19.ko | grep -m1 "4.19" || true
           mkdir -p $GITHUB_WORKSPACE/out
