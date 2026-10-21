@@ -78,6 +78,24 @@ static int __nocfi __init dfroot_init(void)
 
     mkln = (module_kallsyms_lookup_name_t)get_addr("module_kallsyms_lookup_name");
 
+#ifdef DFROOT_PROBE
+    /* probe-only build: resolve every symbol, log, touch nothing */
+    pr_info("dfroot[probe]: patch=%px kern_path=%px invalidate=%px path_put=%px\n",
+            get_addr("aarch64_insn_patch_text"), get_addr("kern_path"),
+            get_addr("invalidate_inode_pages2"), get_addr("path_put"));
+    pr_info("dfroot[probe]: selinux_state=%px avc=%px avc_noaudit=%px\n",
+            get_addr("selinux_state"), get_addr("avc_has_perm"),
+            get_addr("avc_has_perm_noaudit"));
+    pr_info("dfroot[probe]: umh setup=%px exec=%px\n",
+            get_addr("call_usermodehelper_setup"), get_addr("call_usermodehelper_exec"));
+    pr_info("dfroot[probe]: oplus_exe=%px oplus_root=%px defex=%px defex_umh=%px\n",
+            mkln ? mkln("oplus_exe_block_ret_handler") : 0,
+            mkln ? mkln("oplus_root_check_post_handler") : 0,
+            get_addr("task_defex_enforce"), get_addr("task_defex_user_exec"));
+    pr_info("dfroot[probe]: all resolved, no writes performed\n");
+    return -ENODEV;
+#endif
+
     // Invalidate page_cache for crash_dump64
     // NOTE: this can cause issues if a process is currently executing
     //   crash_dump64. We may want to revert to manual restore patching
