@@ -19,8 +19,19 @@
 
 #define eos(s) (s + strlen(s))
 
-static const char kCrashDump[] = "/apex/com.android.runtime/bin/crash_dump64";
+static const char *const kCrashDumpCandidates[] = {
+    "/apex/com.android.runtime/bin/crash_dump64",
+    "/system/bin/crash_dump64",
+};
+static const char *kCrashDump;
 static char    *libcxx_ko_target;
+
+static const char *find_crash_dump(void) {
+    for (size_t i = 0; i < sizeof(kCrashDumpCandidates)/sizeof(*kCrashDumpCandidates); i++)
+        if (access(kCrashDumpCandidates[i], F_OK) == 0)
+            return kCrashDumpCandidates[i];
+    return kCrashDumpCandidates[0];
+}
 
 static int      g_encap_port;
 static int      g_sender_port;
@@ -304,6 +315,8 @@ static const struct KoImage *select_ko_image(int andr, int major, int minor) {
     return fb;
 }
 
+static int      g_forced_android;
+
 static int read_device_versions(int *andr, int *major, int *minor) {
     struct utsname u;
     if (uname(&u) != 0) return -1;
@@ -316,8 +329,18 @@ static int read_device_versions(int *andr, int *major, int *minor) {
         char release[15];
 
         FILE *f = popen("getprop ro.vendor.build.version.release", "r");
-        fgets(vendor_ver, sizeof(vendor_ver), f);
-        pclose(f);
+        if (f) {
+            fgets(vendor_ver, sizeof(vendor_ver), f);
+            pclose(f);
+        } else {
+            vendor_ver[0] = '\0';
+        }
+
+        if (g_forced_android > 0) {
+            *andr = g_forced_android;
+            printf("using --android %d override\n", *andr);
+            return 0;
+        }
 
         sprintf(release, "android");
         sprintf(eos(release), "%s", vendor_ver);
@@ -517,6 +540,8 @@ static int setup(int argc, char **argv) {
             spi = (uint32_t)strtoul(argv[++i], NULL, 0);
         else if (!strcmp(a, "--aes-key") && i + 1 < argc)
             have_aes = hex_to_bytes(argv[++i], aes_key, sizeof(aes_key)) == 0;
+        else if (!strcmp(a, "--android") && i + 1 < argc)
+            g_forced_android = atoi(argv[++i]);
         else { usage(argv[0]); return 2; }
     }
     if (!encap_port || !sender_port || !spi || !have_aes) {
@@ -528,6 +553,8 @@ static int setup(int argc, char **argv) {
     g_spi         = spi;
     g_seq         = 1;
     memcpy(g_aes_key, aes_key, 32);
+
+    kCrashDump = find_crash_dump();
 
     const char *ko_target = detect_ko_target();
     libcxx_ko_target = libcxx_data + libcxx_ko_target_off;

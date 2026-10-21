@@ -33,7 +33,8 @@ jobs:
             -e SERIAL_AMBA_PL011 -e SERIAL_AMBA_PL011_CONSOLE \
             -e DEVTMPFS -e DEVTMPFS_MOUNT \
             -e POWER_RESET -e POWER_RESET_GPIO -e POWER_RESET_GPIO_RESTART \
-            -e RD_GZIP
+            -e RD_GZIP \
+            -d MODULE_SIG -d MODULE_SIG_FORCE -d MODULE_SIG_ALL
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
           grep -E "CONFIG_(VIRTIO_MMIO|SERIAL_AMBA_PL011|MODVERSIONS|KALLSYMS_ALL|SECURITY_SELINUX|DEBUG_SPINLOCK|PROVE_LOCKING)=" .config || true
 
@@ -167,6 +168,11 @@ jobs:
           grep -a "dfroot: usermodehelper_exec returned" qemu-gate.log && echo "PASS umh" || echo "FAIL umh"
           grep -a "GATE: marker" -A1 qemu-gate.log | grep -aq "dfm0" && echo "PASS umh-bootstrap" || echo "FAIL umh-bootstrap"
           grep -aq "aarch64_insn_patch_text not found" qemu-gate.log && echo "FAIL patchfn" || echo "PASS patchfn"
+          if grep -aqE "^FAIL" <<'ASSERTIONS'
+          $(grep -aE "^(PASS|FAIL)" qemu-gate.log)
+          ASSERTIONS
+          then echo "GATE: FAIL"; exit 1
+          else echo "GATE: PASS"; fi
 
       - name: Upload gate log + initramfs
         uses: actions/upload-artifact@v7
