@@ -52,13 +52,17 @@ jobs:
       - name: Build dfroot.ko (4.19)
         run: |
           cd linux-4.19.157
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- M=$GITHUB_WORKSPACE/lkm -j$(nproc) modules
+          # override lkm/Makefile's clang-only CFLAGS (DDK legacy) for gcc
+          KOFLAGS="-Os -fno-asynchronous-unwind-tables -fno-unwind-tables"
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CFLAGS_dfroot.o="$KOFLAGS" \
+            M=$GITHUB_WORKSPACE/lkm -j$(nproc) modules
           aarch64-linux-gnu-objcopy --strip-unneeded \
             -R .comment -R .note.gnu.build-id -R .note.gnu.property \
             -R .note.Linux -R .note.GNU-stack \
             lkm/dfroot.ko $GITHUB_WORKSPACE/out/dfroot-4.19.ko
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- M=$GITHUB_WORKSPACE/lkm clean
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- KCFLAGS="-DDFROOT_PROBE" \
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CFLAGS_dfroot.o="$KOFLAGS" \
+            KCFLAGS="-DDFROOT_PROBE" \
             M=$GITHUB_WORKSPACE/lkm -j$(nproc) modules
           aarch64-linux-gnu-objcopy --strip-unneeded \
             -R .comment -R .note.gnu.build-id -R .note.gnu.property \
