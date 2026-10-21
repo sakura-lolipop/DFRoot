@@ -112,8 +112,13 @@ jobs:
 
       - name: Build initramfs
         run: |
-          BB=https://busybox.net/downloads/binaries/1.31.0-defconfig-multiarch-musl/busybox-arm64
-          curl -fL --retry 3 $BB -o busybox && chmod 755 busybox
+          # busybox.net/binaries is 404 since 2024; use Debian pool static build
+          curl -fL --retry 3 \
+            "https://mirrors.tuna.tsinghua.edu.cn/debian/pool/main/b/busybox/busybox-static_1.30.1-6%2Bb3_arm64.deb" \
+            -o bb.deb
+          mkdir bbx && cd bbx && ar x ../bb.deb && tar xf data.tar.xz ./bin/busybox
+          cd ..
+          cp bbx/bin/busybox busybox && chmod 755 busybox
           mkdir -p initramfs/bin initramfs/proc initramfs/sys initramfs/dev \
                    initramfs/system/bin initramfs/data/user_de/0/df.root
           cp busybox initramfs/bin/
@@ -163,11 +168,13 @@ jobs:
           grep -a "GATE: marker" -A1 qemu-gate.log | grep -aq "dfm0" && echo "PASS umh-bootstrap" || echo "FAIL umh-bootstrap"
           grep -aq "aarch64_insn_patch_text not found" qemu-gate.log && echo "FAIL patchfn" || echo "PASS patchfn"
 
-      - name: Upload gate log
+      - name: Upload gate log + initramfs
         uses: actions/upload-artifact@v7
         with:
           name: qemu-gate-log
-          path: qemu-gate.log
+          path: |
+            qemu-gate.log
+            initramfs.cpio.gz
 
   build-dfroot:
     name: DFRoot APK
