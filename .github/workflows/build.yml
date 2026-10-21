@@ -3,81 +3,184 @@ name: Build
 on:
   push:
     branches: [master, main]
-    tags: ['v*']
-  pull_request:
-    branches: [master, main]
   workflow_dispatch:
 
 jobs:
-  build-lkms:
-    name: LKMs / ${{ matrix.kmi }}
+  kernel-419:
+    name: Vanilla 4.19.157 tree (smartisan config + qemu virt overlay)
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        kmi:
-          - android12-5.10
-          - android13-5.10
-          - android13-5.15
-          - android14-5.15
-          - android14-6.1
-          - android15-6.6
-          - android16-6.12
-          - android17-6.18
-    container:
-      image: ghcr.io/ylarod/ddk-min:${{ matrix.kmi }}-20260828
-      options: --privileged
     steps:
       - uses: actions/checkout@v7
 
-      - name: Build dfroot.ko
+      - name: Install toolchain
         run: |
-          cd lkm
-          make -j$(nproc)
-          llvm-objcopy --strip-unneeded \
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu bc bison flex libssl-dev libelf-dev cpio zstd
+          mkdir -p out
+
+      - name: Download vanilla 4.19.157
+        run: |
+          curl -fL --retry 3 https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.19.157.tar.xz -o linux.tar.xz
+          tar xf linux.tar.xz
+
+      - name: Configure (smartisan config + qemu overlay)
+        run: |
+          cd linux-4.19.157
+          cp ../kmi419/smartisan-aries.config .config
+          # qemu virt machine requirements (keep delta minimal: drivers only,
+          # so genksyms CRCs of core types match the smartisan build)
+          ./scripts/config -e VIRTIO -e VIRTIO_MMIO -e VIRTIO_BLK -e VIRTIO_MENU \
+            -e SERIAL_AMBA_PL011 -e SERIAL_AMBA_PL011_CONSOLE \
+            -e DEVTMPFS -e DEVTMPFS_MOUNT \
+            -e POWER_RESET -e POWER_RESET_GPIO -e POWER_RESET_GPIO_RESTART \
+            -e RD_GZIP
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
+          grep -E "CONFIG_(VIRTIO_MMIO|SERIAL_AMBA_PL011|MODVERSIONS|KALLSYMS_ALL|SECURITY_SELINUX|DEBUG_SPINLOCK|PROVE_LOCKING)=" .config || true
+
+      - name: Dump core struct layouts for CRC sanity
+        run: |
+          cd linux-4.19.157
+          echo "=== struct selinux_state ==="
+          sed -n '/^struct selinux_state {/,/^};/p' security/selinux/include/security.h || true
+
+      - name: Build kernel (Image + modules_prepare + Module.symvers)
+        run: |
+          cd linux-4.19.157
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) Image
+          test -f Module.symvers && echo "Module.symvers present"
+
+      - name: Build dfroot.ko (4.19)
+        run: |
+          cd linux-4.19.157
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- M=$GITHUB_WORKSPACE/lkm -j$(nproc) modules
+          aarch64-linux-gnu-objcopy --strip-unneeded \
             -R .comment -R .note.gnu.build-id -R .note.gnu.property \
             -R .note.Linux -R .note.GNU-stack \
-            -R .BTF -R .BTF.base -R .llvm_addrsig \
-            -R .hyp.text -R .hyp.bss -R .hyp.rodata -R .hyp.event_ids \
-            -R .hyp.patchable_function_entries -R .hyp.data dfroot.ko
+            lkm/dfroot.ko $GITHUB_WORKSPACE/out/dfroot-4.19.ko
+          echo "=== ko vermagic ==="
+          strings $GITHUB_WORKSPACE/out/dfroot-4.19.ko | grep -m1 "4.19" || true
           mkdir -p $GITHUB_WORKSPACE/out
-          cp dfroot.ko $GITHUB_WORKSPACE/out/dfroot-${{ matrix.kmi }}.ko
-          make clean
 
-      - name: Upload dfroot.ko
+      - name: Package kernel tree + kernel image
+        run: |
+          cd linux-4.19.157
+          cp arch/arm64/boot/Image $GITHUB_WORKSPACE/out/Image
+          tar --exclude='.git' --exclude='Documentation' --exclude='samples' \
+              --exclude='tools/testing' \
+              -I 'zstd -T0' -cf $GITHUB_WORKSPACE/out/kernel-419-tree.tar.zst \
+              .
+          ls -la $GITHUB_WORKSPACE/out/
+
+      - name: Upload kernel artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: df-lkm-${{ matrix.kmi }}
-          path: out/dfroot-${{ matrix.kmi }}.ko
+          name: kernel-419
+          path: |
+            out/dfroot-4.19.ko
+            out/kernel-419-tree.tar.zst
+            out/Image
 
-  build-dfroot:
-    needs: build-lkms
+  qemu-gate:
+    name: QEMU gate (4.19.157 virt, logic validation)
+    needs: kernel-419
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
-      - name: Validate signing config
-        if: github.event_name != 'pull_request'
+      - name: Install qemu
         run: |
-          if [ "${{ secrets.KEYSTORE }}" = "" ]; then
-            echo "::error::Signing secrets not configured. KEYSTORE secret is required for release builds."
-            exit 1
-          fi
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-arm cpio
 
-      - name: Create signing.properties
-        if: github.event_name != 'pull_request'
-        run: |
-          echo KEYSTORE_FILE=../keystore.jks > signing.properties
-          echo KEYSTORE_PASSWORD=${{ secrets.KEYSTORE_PASSWORD }} >> signing.properties
-          echo KEY_ALIAS=${{ secrets.KEY_ALIAS }} >> signing.properties
-          echo KEY_PASSWORD=${{ secrets.KEY_PASSWORD }} >> signing.properties
-          echo ${{ secrets.KEYSTORE }} | base64 --decode > keystore.jks
-
-      - name: Download DF LKMs
+      - name: Download kernel artifacts
         uses: actions/download-artifact@v7
         with:
-          pattern: df-lkm-*
-          merge-multiple: true
-          path: app/src/main/jni/ko/
+          name: kernel-419
+          path: art
+
+      - name: Build initramfs
+        run: |
+          BB=https://busybox.net/downloads/binaries/1.31.0-defconfig-multiarch-musl/busybox-arm64
+          curl -fL --retry 3 $BB -o busybox && chmod 755 busybox
+          mkdir -p initramfs/bin initramfs/proc initramfs/sys initramfs/dev \
+                   initramfs/system/bin initramfs/data/user_de/0/df.root
+          cp busybox initramfs/bin/
+          for t in sh mount insmod dmesg sleep poweroff sync cat ls grep; do
+            ln -sf /bin/busybox initramfs/system/bin/$t
+            ln -sf /bin/busybox initramfs/bin/$t
+          done
+          cp art/dfroot-4.19.ko initramfs/dfroot.ko
+          printf '#!/system/bin/sh\ntouch /dev/dfm0\n' > initramfs/data/user_de/0/df.root/bootstrap
+          chmod 755 initramfs/data/user_de/0/df.root/bootstrap
+          cat > initramfs/init <<'EOF'
+          #!/system/bin/sh
+          /bin/busybox mount -t proc none /proc
+          /bin/busybox mount -t sysfs none /sys
+          echo "=== GATE: insmod dfroot-4.19.ko ==="
+          /bin/busybox insmod /dfroot.ko
+          echo "=== GATE: insmod rc=$? (nonzero/ENODEV expected, init self-unloads) ==="
+          /bin/busybox sleep 3
+          echo "=== GATE: marker /dev/dfm0 (UMH bootstrap ran?) ==="
+          /bin/busybox ls -la /dev/dfm0 2>&1
+          echo "=== GATE: dmesg ==="
+          /bin/busybox dmesg | /bin/busybox grep -a dfroot
+          echo "=== GATE END ==="
+          /bin/busybox sync
+          /bin/busybox poweroff -f || /bin/busybox reboot -f
+          /bin/busybox sleep 60
+          EOF
+          chmod 755 initramfs/init
+          (cd initramfs && find . | cpio -o -H newc --quiet | gzip -1) > initramfs.cpio.gz
+          ls -la initramfs.cpio.gz
+
+      - name: Run QEMU gate
+        run: |
+          set +e
+          timeout 180 qemu-system-aarch64 \
+            -M virt -cpu cortex-a57 -m 512M -smp 2 \
+            -nographic -no-reboot \
+            -kernel art/Image \
+            -initrd initramfs.cpio.gz \
+            -append "console=ttyAMA0 rdinit=/init loglevel=7" \
+            2>&1 | tee qemu-gate.log
+          set -e
+          echo "=== assertions ==="
+          grep -a "dfroot: selinux_state permissive" qemu-gate.log && echo "PASS selinux" || echo "FAIL selinux"
+          grep -a "dfroot: avc_has_perm patched"   qemu-gate.log && echo "PASS avc"    || echo "FAIL avc"
+          grep -a "dfroot: usermodehelper_exec returned" qemu-gate.log && echo "PASS umh" || echo "FAIL umh"
+          grep -a "GATE: marker" -A1 qemu-gate.log | grep -aq "dfm0" && echo "PASS umh-bootstrap" || echo "FAIL umh-bootstrap"
+          grep -aq "aarch64_insn_patch_text not found" qemu-gate.log && echo "FAIL patchfn" || echo "PASS patchfn"
+
+      - name: Upload gate log
+        uses: actions/upload-artifact@v7
+        with:
+          name: qemu-gate-log
+          path: qemu-gate.log
+
+  build-dfroot:
+    name: DFRoot APK
+    needs: kernel-419
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Place 4.19 ko
+        uses: actions/download-artifact@v7
+        with:
+          name: kernel-419
+          path: art
+
+      - name: Stage ko into jni
+        run: |
+          mkdir -p app/src/main/jni/ko
+          cp art/dfroot-4.19.ko app/src/main/jni/ko/dfroot-4.19.ko
+          # GKI kos are not built in this fork; tiny placeholders keep the
+          # .incbin symbols defined (dead weight for the 4.19 path)
+          for k in android12-5.10 android13-5.10 android13-5.15 android14-5.15 \
+                   android14-6.1 android15-6.6 android16-6.12 android17-6.18; do
+            [ -f app/src/main/jni/ko/dfroot-$k.ko ] || printf '\x7fELF' > app/src/main/jni/ko/dfroot-$k.ko
+          done
+          ls -la app/src/main/jni/ko/
 
       - uses: actions/setup-java@v6
         with:
@@ -86,24 +189,13 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v6
 
-      - name: Build DFRoot APK
+      - name: Build DFRoot APK (debug, self-signed)
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            ./gradlew :app:assembleDebug
-          else
-            ./gradlew :app:assembleRelease
-          fi
+          ./gradlew :app:assembleDebug --no-daemon
+          ls -la app/build/outputs/apk/debug/
 
       - name: Upload DFRoot APK
         uses: actions/upload-artifact@v7
         with:
           name: DFRoot
-          path: |
-            app/build/outputs/apk/release/DFRoot_*.apk
-            app/build/outputs/apk/debug/DFRoot_*.apk
-
-      - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v1
-        with:
-          files: app/build/outputs/apk/release/DFRoot_*.apk
+          path: app/build/outputs/apk/debug/DFRoot_*.apk

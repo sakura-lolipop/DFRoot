@@ -4,6 +4,7 @@
 #include <linux/kprobes.h>
 #include <linux/module.h>
 #include <linux/namei.h>
+#include <linux/version.h>
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("DFRoot LKM");
 
@@ -100,8 +101,15 @@ static int __nocfi __init dfroot_init(void)
         pr_err("dfroot: selinux_state not found\n");
         return -EINVAL;
     }
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 0, 0)
+    /* 4.x: struct selinux_state { bool disabling; bool enforcing; ... }
+     * enforcing sits at byte offset 1, not 0 as on 5.x+ */
+    WRITE_ONCE(selinux_state[1], false);
+#else
     WRITE_ONCE(*selinux_state, false);
-    pr_info("dfroot: selinux_state permissive\n");
+#endif
+    pr_info("dfroot: selinux_state permissive (bytes: %d/%d)\n",
+            selinux_state[0], selinux_state[1]);
 
     // Some kernels ship CONFIG_SECURITY_SELINUX_DEVELOP=n, so the selinux_state
     // write above is a no-op there — patch the SELinux checks themselves instead
