@@ -8,6 +8,11 @@
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("DFRoot LKM");
 
+/* __nocfi exists on 5.10+ arm64 kernels only; neutralize it under gcc/4.x */
+#ifndef __nocfi
+#define __nocfi
+#endif
+
 typedef unsigned long (*kallsyms_lookup_name_t)(const char *name);
 typedef unsigned long (*module_kallsyms_lookup_name_t)(const char *name);
 typedef void *(*umh_setup_t)(const char *path, char **argv, char **envp, gfp_t gfp,
